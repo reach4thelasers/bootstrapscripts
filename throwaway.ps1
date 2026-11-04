@@ -14,8 +14,8 @@
       3. installs Claude Code with its native installer, when missing;
       4. reloads PATH from the registry, so the new tools are found in this window;
       5. signs in to GitHub in the browser, when not signed in, and sets git to use that sign-in;
-      6. clones the template repo to $HOME\dev\ClaudeProjectTemplate, or fast-forwards an
-         existing clone;
+      6. clones the template repo to $HOME\dev\ClaudeProjectTemplate, or, for an existing
+         clone, switches it to the answered branch and fast-forwards it;
       7. runs Setup-ThrowawayMachine.ps1 from that clone.
 
     It stops at the first failure and names the step. Every step tests whether it is already
@@ -26,8 +26,8 @@
         & ([scriptblock]::Create((irm <url>))) -Root D:\work -Workspace Example
 
 .PARAMETER Branch
-    The template repo branch to clone. Asked for when not given; Enter accepts main. An existing
-    clone is only fast-forwarded on the branch it already has.
+    The template repo branch to use. Asked for when not given; Enter accepts main. An existing
+    clone is switched to this branch, then fast-forwarded.
 
 .PARAMETER Root
     The workspace root, passed to Setup-ThrowawayMachine.ps1. Asked for when not given. Required.
@@ -266,8 +266,10 @@ try {
         Write-Host ('[done] cloned to {0}' -f $templateDir)
     }
     else {
+        Invoke-Tool -FilePath 'git' -Arguments @('-C', $templateDir, 'fetch', 'origin')
+        Invoke-Tool -FilePath 'git' -Arguments @('-C', $templateDir, 'switch', $Branch)
         Invoke-Tool -FilePath 'git' -Arguments @('-C', $templateDir, 'pull', '--ff-only')
-        Write-Host ('[done] updated {0}' -f $templateDir)
+        Write-Host ('[done] updated {0} on branch {1}' -f $templateDir, $Branch)
     }
     if (-not (Test-Path -LiteralPath $setupScript)) {
         throw ('{0} does not exist. Is branch "{1}" the right one?' -f $setupScript, $Branch)
