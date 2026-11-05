@@ -9,11 +9,12 @@
 
     It asks its questions first, so you can walk away once they are answered. Then, in order, it:
       1. stops when the window is not elevated, and sets TLS 1.2;
-      2. asks for the set-up source and the kit branch, unless they were given as parameters;
+      2. asks for the set-up source, unless it was given as a parameter;
       3. installs Git with winget, when missing, and reloads PATH from the registry;
-      4. connects to the set-up source, clones the kit from the source's bundle to
-         $HOME\dev\Toolkit (or brings an existing clone up to date), and prints the source's
-         published.txt, so you can see how fresh the kit is;
+      4. connects to the set-up source, takes the kit branch from the source's bundle (which holds
+         one branch), clones the kit from the bundle to $HOME\dev\Toolkit (or brings an existing
+         clone up to date), and prints the source's published.txt, so you can see how fresh the
+         kit is;
       5. runs the kit's pc-setup\Setup.ps1, which shows its menu of modules unless -Preset or
          -Modules is given.
 
@@ -31,8 +32,9 @@
     that are asked for; the connection lasts until sign-out and nothing saves the password.
 
 .PARAMETER Branch
-    The kit branch to clone. Asked for when not given; Enter accepts main. An existing clone is
-    switched to this branch, then fast-forwarded.
+    An override for the kit branch. Not asked for. By default the branch is the one the set-up
+    source's bundle holds; the script stops when the bundle holds none or several. When given, the
+    bundle must hold this branch. An existing clone is switched to the branch, then fast-forwarded.
 
 .PARAMETER Preset
     A ready-made combination of modules, passed to the kit's Setup.ps1. Without -Preset and
@@ -145,6 +147,30 @@ function Read-Answer {
     }
 }
 
+function Resolve-KitBranch {
+    # The kit branch: the one branch the bundle holds, or $Requested when the bundle holds it.
+    # Throws when the bundle holds no branch or several, or does not hold $Requested.
+    param([string]$Bundle, [string]$Requested)
+
+    $heads = @(Get-ToolOutput -FilePath 'git' -Arguments @('bundle', 'list-heads', $Bundle))
+    if ($heads.Count -eq 0) {
+        throw ('{0} is not a readable git bundle.' -f $Bundle)
+    }
+    $names = @($heads | ForEach-Object {
+            if ($_ -match '^[0-9a-f]{40,64}\s+refs/heads/(.+)$') { $Matches[1] }
+        })
+    if ($Requested) {
+        if ($names -cnotcontains $Requested) {
+            throw ('The kit bundle does not hold branch "{0}". It holds: {1}' -f $Requested, ($heads -join '; '))
+        }
+        return $Requested
+    }
+    if ($names.Count -ne 1) {
+        throw ('The kit bundle must hold exactly one branch (publish one branch). It holds {0}: {1}' -f $names.Count, ($heads -join '; '))
+    }
+    return $names[0]
+}
+
 function Connect-Source {
     # Makes the set-up source reachable, or throws naming its path. A local path must exist. A share
     # path that does not hold the kit's bundle yet is connected with net use, which asks for the
@@ -184,15 +210,12 @@ try {
     Write-Host 'ok'
 
     # ---- Step 2: ask ---------------------------------------------------------------------------
-    Start-Step 'Step 2: ask for the set-up source and the kit branch'
+    Start-Step 'Step 2: ask for the set-up source'
     Write-Host 'Questions first, so you can walk away once they are answered.'
     Update-SessionPath
     if ($Source) { $Source = $Source.Trim().Trim('"').Trim("'").Trim() }
     if (-not $Source) {
         $Source = Read-Answer -Prompt 'Set-up source (a folder, or \\server\share)'
-    }
-    if (-not $Branch) {
-        $Branch = Read-Answer -Prompt 'Kit branch (Enter for main)' -Default 'main'
     }
 
     # ---- Step 3: Git ---------------------------------------------------------------------------
@@ -224,12 +247,19 @@ try {
     if (-not (Test-Path -LiteralPath $bundle -PathType Leaf)) {
         throw ('The set-up source holds no kit bundle: {0}' -f $bundle)
     }
-    $heads = @(Get-ToolOutput -FilePath 'git' -Arguments @('bundle', 'list-heads', $bundle))
-    if ($heads.Count -eq 0) {
-        throw ('{0} is not a readable git bundle.' -f $bundle)
+    $kitSource = if ($Branch) { 'given as -Branch' } else { 'from the set-up source' }
+    $Branch = Resolve-KitBranch -Bundle $bundle -Requested $Branch
+    $published = Join-Path $Source 'kit\published.txt'
+    Write-Host ''
+    Write-Host ('Kit branch: {0} ({1})' -f $Branch, $kitSource)
+    Write-Host 'Published to the set-up source:'
+    if (Test-Path -LiteralPath $published -PathType Leaf) {
+        foreach ($line in Get-Content -LiteralPath $published) {
+            if ($line.Trim()) { Write-Host ('  {0}' -f $line.Trim()) }
+        }
     }
-    if (-not ($heads | Where-Object { $_ -match ('^[0-9a-f]{40,64}\s+refs/heads/' + [regex]::Escape($Branch) + '$') })) {
-        throw ('The kit bundle does not hold branch "{0}". It holds: {1}' -f $Branch, ($heads -join '; '))
+    else {
+        Write-Host '  (the source has no published.txt)'
     }
     if (-not (Test-Path -LiteralPath (Join-Path $kitDir '.git'))) {
         Invoke-Tool -FilePath 'git' -Arguments @('clone', '-b', $Branch, $bundle, $kitDir)
@@ -251,17 +281,6 @@ try {
     }
     if (-not (Test-Path -LiteralPath $setupScript)) {
         throw ('{0} does not exist. Is branch "{1}" the right one?' -f $setupScript, $Branch)
-    }
-    $published = Join-Path $Source 'kit\published.txt'
-    Write-Host ''
-    Write-Host 'Published to the set-up source:'
-    if (Test-Path -LiteralPath $published -PathType Leaf) {
-        foreach ($line in Get-Content -LiteralPath $published) {
-            if ($line.Trim()) { Write-Host ('  {0}' -f $line.Trim()) }
-        }
-    }
-    else {
-        Write-Host '  (the source has no published.txt)'
     }
 
     # ---- Step 5: the kit's set-up script -------------------------------------------------------
